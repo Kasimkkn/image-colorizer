@@ -1,6 +1,6 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Canvas as FabricCanvas, FabricImage, Path } from "fabric";
+import { Canvas as FabricCanvas, FabricImage, Path, Circle, Line } from "fabric";
 import { DrawingTools, DrawingTool } from "./DrawingTools";
 import { SegmentationManager, Segment } from "./SegmentationManager";
 import { ColorPicker } from "./ColorPicker";
@@ -35,6 +35,7 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
   const [activeSegmentId, setActiveSegmentId] = useState<string | null>(null);
   const [currentPath, setCurrentPath] = useState<Point[]>([]);
   const [isDrawingPath, setIsDrawingPath] = useState(false);
+  const [tempPathObjects, setTempPathObjects] = useState<any[]>([]);
 
   const canUndo = historyIndex > 0;
   const canRedo = historyIndex < history.length - 1;
@@ -46,6 +47,68 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
     setHistory(newHistory);
     setHistoryIndex(newHistory.length - 1);
   }, [history, historyIndex]);
+
+  const createPathFromPoints = (points: Point[], strokeColor: string) => {
+    if (points.length < 2) return null;
+    
+    let pathString = `M ${points[0].x} ${points[0].y}`;
+    for (let i = 1; i < points.length; i++) {
+      pathString += ` L ${points[i].x} ${points[i].y}`;
+    }
+    
+    return new Path(pathString, {
+      stroke: strokeColor,
+      strokeWidth: 2,
+      fill: '',
+      selectable: false,
+      evented: false,
+      opacity: 0.8
+    });
+  };
+
+  const updatePathVisualization = useCallback(() => {
+    if (!fabricCanvas || !currentPath.length) return;
+    
+    // Remove previous temp path objects
+    tempPathObjects.forEach(obj => fabricCanvas.remove(obj));
+    setTempPathObjects([]);
+    
+    const newTempObjects = [];
+    
+    // Draw lines between points
+    for (let i = 0; i < currentPath.length - 1; i++) {
+      const line = new Line([
+        currentPath[i].x, currentPath[i].y,
+        currentPath[i + 1].x, currentPath[i + 1].y
+      ], {
+        stroke: color,
+        strokeWidth: 2,
+        selectable: false,
+        evented: false,
+        opacity: 0.7
+      });
+      fabricCanvas.add(line);
+      newTempObjects.push(line);
+    }
+    
+    // Draw points
+    currentPath.forEach((point, index) => {
+      const circle = new Circle({
+        left: point.x - 3,
+        top: point.y - 3,
+        radius: 3,
+        fill: color,
+        selectable: false,
+        evented: false,
+        opacity: 0.8
+      });
+      fabricCanvas.add(circle);
+      newTempObjects.push(circle);
+    });
+    
+    setTempPathObjects(newTempObjects);
+    fabricCanvas.renderAll();
+  }, [fabricCanvas, currentPath, color, tempPathObjects]);
 
   const initializeCanvas = useCallback(async () => {
     if (!canvasRef.current) return;
@@ -92,7 +155,7 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
 
     // Setup drawing brush
     canvas.freeDrawingBrush.color = color;
-    canvas.freeDrawingBrush.width = 5;
+    canvas.freeDrawingBrush.width = brushSize;
     canvas.isDrawingMode = activeTool === "pencil";
 
     // Canvas event listeners
@@ -109,7 +172,7 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
     return () => {
       canvas.dispose();
     };
-  }, [imageFile, color, saveState]);
+  }, [imageFile, color, brushSize, activeTool, saveState]);
 
   const handleUndo = () => {
     if (!fabricCanvas || !canUndo) return;
@@ -136,27 +199,43 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
     
     setActiveTool(tool);
     
-    // Reset drawing mode based on tool
-    fabricCanvas.isDrawingMode = tool === "pencil";
-    
-    if (tool === "pencil" && fabricCanvas.freeDrawingBrush) {
-      fabricCanvas.freeDrawingBrush.color = color;
-      fabricCanvas.freeDrawingBrush.width = brushSize;
+    // Clear any ongoing path
+    if (tempPathObjects.length > 0) {
+      tempPathObjects.forEach(obj => fabricCanvas.remove(obj));
+      setTempPathObjects([]);
+      fabricCanvas.renderAll();
     }
     
-    // Clear any ongoing bezier curve
-    bezierCurve.clear();
     setCurrentPath([]);
     setIsDrawingPath(false);
+    bezierCurve.clear();
+    
+    // Set drawing mode based on tool
+    if (tool === "pencil") {
+      fabricCanvas.isDrawingMode = true;
+      fabricCanvas.freeDrawingBrush.color = color;
+      fabricCanvas.freeDrawingBrush.width = brushSize;
+    } else if (tool === "eraser") {
+      fabricCanvas.isDrawingMode = true;
+      fabricCanvas.freeDrawingBrush.color = "#1a1a1a";
+      fabricCanvas.freeDrawingBrush.width = 10;
+    } else {
+      fabricCanvas.isDrawingMode = false;
+    }
   };
 
   const handleCanvasClick = useCallback((e: any) => {
-    if (!fabricCanvas || activeTool === "pencil") return;
+    if (!fabricCanvas || activeTool === "pencil" || activeTool === "eraser") return;
     
     const pointer = fabricCanvas.getPointer(e.e);
     const point = { x: pointer.x, y: pointer.y };
     
     if (activeTool === "line" || activeTool === "pen") {
+      if (!activeSegmentId) {
+        toast.error("Please create a segment first!");
+        return;
+      }
+      
       if (!isDrawingPath) {
         // Start new path
         setCurrentPath([point]);
@@ -178,12 +257,28 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
           finalizePath([...newPath, newPath[0]], true);
         }
       }
+    } else if (activeTool === "zoom") {
+      // Handle zoom functionality
+      const newZoom = zoom < 3 ? zoom * 1.2 : 1;
+      fabricCanvas.setZoom(newZoom);
+      setZoom(newZoom);
     }
-  }, [fabricCanvas, activeTool, currentPath, isDrawingPath, snapAngles]);
+  }, [fabricCanvas, activeTool, currentPath, isDrawingPath, snapAngles, activeSegmentId, zoom]);
 
   const finalizePath = (pathPoints: Point[], closed: boolean) => {
-    if (!activeSegmentId) return;
+    if (!activeSegmentId || !fabricCanvas) return;
     
+    // Remove temp objects
+    tempPathObjects.forEach(obj => fabricCanvas.remove(obj));
+    setTempPathObjects([]);
+    
+    // Create final path object
+    const pathObj = createPathFromPoints(pathPoints, color);
+    if (pathObj) {
+      fabricCanvas.add(pathObj);
+    }
+    
+    // Update segment
     setSegments(prev => prev.map(segment => 
       segment.id === activeSegmentId
         ? { ...segment, points: pathPoints, closed }
@@ -192,7 +287,9 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
     
     setCurrentPath([]);
     setIsDrawingPath(false);
-    saveState(fabricCanvas!);
+    saveState(fabricCanvas);
+    
+    toast.success(closed ? "Segment closed!" : "Segment path added!");
   };
 
   const handleSegmentCreate = () => {
@@ -207,6 +304,7 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
     
     setSegments(prev => [...prev, newSegment]);
     setActiveSegmentId(newSegment.id);
+    toast.success("New segment created! Start drawing to outline the area.");
   };
 
   const handleSegmentDelete = (id: string) => {
@@ -269,6 +367,11 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
     toast.success("Image downloaded!");
   };
 
+  // Update path visualization when currentPath changes
+  useEffect(() => {
+    updatePathVisualization();
+  }, [updatePathVisualization]);
+
   useEffect(() => {
     initializeCanvas();
   }, [initializeCanvas]);
@@ -276,17 +379,6 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
   useEffect(() => {
     if (!fabricCanvas) return;
 
-    fabricCanvas.isDrawingMode = activeTool === "pencil" || activeTool === "eraser";
-    
-    if (fabricCanvas.freeDrawingBrush) {
-      fabricCanvas.freeDrawingBrush.color = activeTool === "eraser" ? "#1a1a1a" : color;
-      fabricCanvas.freeDrawingBrush.width = activeTool === "eraser" ? 10 : brushSize;
-    }
-  }, [activeTool, color, fabricCanvas, brushSize]);
-
-  useEffect(() => {
-    if (!fabricCanvas) return;
-    
     fabricCanvas.on('mouse:down', handleCanvasClick);
     
     return () => {
@@ -363,7 +455,7 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
                 <li>• <strong>Pen:</strong> Bezier curves for precise edges</li>
                 <li>• <strong>Line:</strong> Straight lines with snap-to-angle</li>
                 <li>• <strong>Eraser:</strong> Remove outline segments</li>
-                <li>• <strong>Zoom:</strong> Up to 400% magnification</li>
+                <li>• <strong>Zoom:</strong> Up to 300% magnification</li>
               </ul>
             </div>
             <div>
