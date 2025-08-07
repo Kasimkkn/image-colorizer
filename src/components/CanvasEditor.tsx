@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Canvas as FabricCanvas, FabricImage, Path } from "fabric";
-import { Toolbar, Tool } from "./Toolbar";
+import { DrawingTools, DrawingTool } from "./DrawingTools";
+import { SegmentationManager, Segment } from "./SegmentationManager";
 import { ColorPicker } from "./ColorPicker";
 import { toast } from "sonner";
-import { ZoomIn, ZoomOut, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { BezierCurve, snapToAngle, isPointNearPoint, Point } from "@/utils/bezierUtils";
 
 interface CanvasEditorProps {
   imageFile: File;
@@ -14,12 +15,28 @@ interface CanvasEditorProps {
 export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [fabricCanvas, setFabricCanvas] = useState<FabricCanvas | null>(null);
-  const [activeTool, setActiveTool] = useState<Tool>("brush");
+  const [activeTool, setActiveTool] = useState<DrawingTool>("pencil");
   const [color, setColor] = useState("#ff6b6b");
   const [opacity, setOpacity] = useState(0.8);
   const [zoom, setZoom] = useState(1);
-  const [canUndo, setCanUndo] = useState(false);
+  
+  // Drawing tools state
+  const [brushSize, setBrushSize] = useState(5);
+  const [snapAngles, setSnapAngles] = useState(false);
+  const [bezierCurve] = useState(new BezierCurve());
+  
+  // History state
   const [history, setHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  
+  // Segmentation state
+  const [segments, setSegments] = useState<Segment[]>([]);
+  const [activeSegmentId, setActiveSegmentId] = useState<string | null>(null);
+  const [currentPath, setCurrentPath] = useState<Point[]>([]);
+  const [isDrawingPath, setIsDrawingPath] = useState(false);
+
+  const canUndo = historyIndex > 0;
+  const canRedo = historyIndex < history.length - 1;
 
   const initializeCanvas = useCallback(async () => {
     if (!canvasRef.current) return;
@@ -67,7 +84,7 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
     // Setup drawing brush
     canvas.freeDrawingBrush.color = color;
     canvas.freeDrawingBrush.width = 5;
-    canvas.isDrawingMode = activeTool === "brush";
+    canvas.isDrawingMode = activeTool === "pencil";
 
     // Canvas event listeners
     canvas.on('path:created', () => {
@@ -83,28 +100,132 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
     return () => {
       canvas.dispose();
     };
-  }, [imageFile, color]);
+  }, [imageFile, color, saveState]);
 
-  const saveState = (canvas: FabricCanvas) => {
+  const saveState = useCallback((canvas: FabricCanvas) => {
     const state = canvas.toJSON();
-    setHistory(prev => [...prev.slice(-19), JSON.stringify(state)]);
-    setCanUndo(true);
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(JSON.stringify(state));
+    setHistory(newHistory);
+    setHistoryIndex(newHistory.length - 1);
+  }, [history, historyIndex]);
+
+  const handleUndo = () => {
+    if (!fabricCanvas || !canUndo) return;
+    
+    const previousState = history[historyIndex - 1];
+    fabricCanvas.loadFromJSON(previousState).then(() => {
+      fabricCanvas.renderAll();
+      setHistoryIndex(historyIndex - 1);
+    });
   };
 
-  useEffect(() => {
-    initializeCanvas();
-  }, [initializeCanvas]);
-
-  useEffect(() => {
-    if (!fabricCanvas) return;
-
-    fabricCanvas.isDrawingMode = activeTool === "brush" || activeTool === "eraser";
+  const handleRedo = () => {
+    if (!fabricCanvas || !canRedo) return;
     
-    if (fabricCanvas.freeDrawingBrush) {
-      fabricCanvas.freeDrawingBrush.color = activeTool === "eraser" ? "#1a1a1a" : color;
-      fabricCanvas.freeDrawingBrush.width = activeTool === "eraser" ? 10 : 5;
+    const nextState = history[historyIndex + 1];
+    fabricCanvas.loadFromJSON(nextState).then(() => {
+      fabricCanvas.renderAll();
+      setHistoryIndex(historyIndex + 1);
+    });
+  };
+
+  const handleToolChange = (tool: DrawingTool) => {
+    if (!fabricCanvas) return;
+    
+    setActiveTool(tool);
+    
+    // Reset drawing mode based on tool
+    fabricCanvas.isDrawingMode = tool === "pencil";
+    
+    if (tool === "pencil" && fabricCanvas.freeDrawingBrush) {
+      fabricCanvas.freeDrawingBrush.color = color;
+      fabricCanvas.freeDrawingBrush.width = brushSize;
     }
-  }, [activeTool, color, fabricCanvas]);
+    
+    // Clear any ongoing bezier curve
+    bezierCurve.clear();
+    setCurrentPath([]);
+    setIsDrawingPath(false);
+  };
+
+  const handleCanvasClick = useCallback((e: any) => {
+    if (!fabricCanvas || activeTool === "pencil") return;
+    
+    const pointer = fabricCanvas.getPointer(e.e);
+    const point = { x: pointer.x, y: pointer.y };
+    
+    if (activeTool === "line" || activeTool === "pen") {
+      if (!isDrawingPath) {
+        // Start new path
+        setCurrentPath([point]);
+        setIsDrawingPath(true);
+      } else {
+        let finalPoint = point;
+        
+        // Apply angle snapping for line tool
+        if (activeTool === "line" && snapAngles && currentPath.length > 0) {
+          finalPoint = snapToAngle(point, currentPath[currentPath.length - 1]);
+        }
+        
+        const newPath = [...currentPath, finalPoint];
+        setCurrentPath(newPath);
+        
+        // Check for auto-close (within 10px of start point)
+        if (newPath.length > 2 && isPointNearPoint(finalPoint, newPath[0])) {
+          // Close the path and create segment
+          finalizePath([...newPath, newPath[0]], true);
+        }
+      }
+    }
+  }, [fabricCanvas, activeTool, currentPath, isDrawingPath, snapAngles]);
+
+  const finalizePath = (pathPoints: Point[], closed: boolean) => {
+    if (!activeSegmentId) return;
+    
+    setSegments(prev => prev.map(segment => 
+      segment.id === activeSegmentId
+        ? { ...segment, points: pathPoints, closed }
+        : segment
+    ));
+    
+    setCurrentPath([]);
+    setIsDrawingPath(false);
+    saveState(fabricCanvas!);
+  };
+
+  const handleSegmentCreate = () => {
+    const newSegment: Segment = {
+      id: `segment-${Date.now()}`,
+      name: `Segment ${segments.length + 1}`,
+      color: color,
+      visible: true,
+      closed: false,
+      points: []
+    };
+    
+    setSegments(prev => [...prev, newSegment]);
+    setActiveSegmentId(newSegment.id);
+  };
+
+  const handleSegmentDelete = (id: string) => {
+    setSegments(prev => prev.filter(seg => seg.id !== id));
+    if (activeSegmentId === id) {
+      setActiveSegmentId(null);
+    }
+  };
+
+  const handleSegmentToggleVisibility = (id: string) => {
+    setSegments(prev => prev.map(segment =>
+      segment.id === id ? { ...segment, visible: !segment.visible } : segment
+    ));
+  };
+
+  const handleSegmentColorChange = (id: string, newColor: string) => {
+    setSegments(prev => prev.map(segment =>
+      segment.id === id ? { ...segment, color: newColor } : segment
+    ));
+  };
 
   const handleZoom = (direction: 'in' | 'out') => {
     if (!fabricCanvas) return;
@@ -114,18 +235,6 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
     
     fabricCanvas.setZoom(clampedZoom);
     setZoom(clampedZoom);
-  };
-
-  const handleUndo = () => {
-    if (!fabricCanvas || history.length === 0) return;
-    
-    const previousState = history[history.length - 1];
-    setHistory(prev => prev.slice(0, -1));
-    
-    fabricCanvas.loadFromJSON(previousState).then(() => {
-      fabricCanvas.renderAll();
-      setCanUndo(history.length > 1);
-    });
   };
 
   const handleClear = () => {
@@ -159,6 +268,31 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
     toast.success("Image downloaded!");
   };
 
+  useEffect(() => {
+    initializeCanvas();
+  }, [initializeCanvas]);
+
+  useEffect(() => {
+    if (!fabricCanvas) return;
+
+    fabricCanvas.isDrawingMode = activeTool === "brush" || activeTool === "eraser";
+    
+    if (fabricCanvas.freeDrawingBrush) {
+      fabricCanvas.freeDrawingBrush.color = activeTool === "eraser" ? "#1a1a1a" : color;
+      fabricCanvas.freeDrawingBrush.width = activeTool === "eraser" ? 10 : 5;
+    }
+  }, [activeTool, color, fabricCanvas]);
+
+  useEffect(() => {
+    if (!fabricCanvas) return;
+    
+    fabricCanvas.on('mouse:down', handleCanvasClick);
+    
+    return () => {
+      fabricCanvas.off('mouse:down', handleCanvasClick);
+    };
+  }, [fabricCanvas, handleCanvasClick]);
+
   return (
     <div className="min-h-screen p-6">
       <div className="max-w-7xl mx-auto space-y-6">
@@ -166,7 +300,7 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold neon-text">Image Colorization Studio</h1>
-            <p className="text-muted-foreground">Transform your images with professional colorization tools</p>
+            <p className="text-muted-foreground">Professional segmentation and colorization tools</p>
           </div>
           <Button variant="outline" onClick={onBack}>
             ← Back to Upload
@@ -175,13 +309,28 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
 
         {/* Tools Panel */}
         <div className="flex gap-6 flex-wrap">
-          <Toolbar
+          <DrawingTools
             activeTool={activeTool}
-            onToolChange={setActiveTool}
-            onClear={handleClear}
-            onDownload={handleDownload}
+            onToolChange={handleToolChange}
+            brushSize={brushSize}
+            onBrushSizeChange={setBrushSize}
+            zoomLevel={zoom}
             canUndo={canUndo}
+            canRedo={canRedo}
             onUndo={handleUndo}
+            onRedo={handleRedo}
+            snapToAngle={snapAngles}
+            onSnapToAngleChange={setSnapAngles}
+          />
+
+          <SegmentationManager
+            segments={segments}
+            activeSegmentId={activeSegmentId}
+            onSegmentSelect={setActiveSegmentId}
+            onSegmentCreate={handleSegmentCreate}
+            onSegmentDelete={handleSegmentDelete}
+            onSegmentToggleVisibility={handleSegmentToggleVisibility}
+            onSegmentColorChange={handleSegmentColorChange}
           />
 
           <ColorPicker
@@ -190,31 +339,6 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
             opacity={opacity}
             onOpacityChange={setOpacity}
           />
-
-          {/* Zoom Controls */}
-          <div className="glass-panel p-4 rounded-xl shadow-card">
-            <div className="flex items-center gap-2">
-              <Button
-                variant="tool"
-                size="icon"
-                onClick={() => handleZoom('out')}
-                disabled={zoom <= 0.5}
-              >
-                <ZoomOut className="h-4 w-4" />
-              </Button>
-              <span className="text-sm font-mono px-2 min-w-16 text-center">
-                {Math.round(zoom * 100)}%
-              </span>
-              <Button
-                variant="tool"
-                size="icon"
-                onClick={() => handleZoom('in')}
-                disabled={zoom >= 3}
-              >
-                <ZoomIn className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
         </div>
 
         {/* Canvas */}
@@ -222,20 +346,36 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
           <div className="glass-panel p-6 rounded-xl shadow-card">
             <canvas
               ref={canvasRef}
-              className="border border-border rounded-lg shadow-neon-strong"
+              className="border border-border rounded-lg shadow-neon-strong cursor-crosshair"
             />
           </div>
         </div>
 
         {/* Instructions */}
-        <div className="glass-panel p-4 rounded-xl shadow-card max-w-2xl mx-auto">
-          <h3 className="font-semibold neon-text mb-2">Quick Tips:</h3>
-          <ul className="text-sm text-muted-foreground space-y-1">
-            <li>• Use the <strong>Brush</strong> tool to add colors to specific areas</li>
-            <li>• Use the <strong>Eraser</strong> to remove unwanted strokes</li>
-            <li>• Adjust opacity for subtle color blending effects</li>
-            <li>• Zoom in for detailed work on small areas</li>
-          </ul>
+        <div className="glass-panel p-4 rounded-xl shadow-card max-w-4xl mx-auto">
+          <h3 className="font-semibold neon-text mb-2">Phase 2: Manual Segmentation Guide</h3>
+          <div className="grid md:grid-cols-2 gap-4 text-sm text-muted-foreground">
+            <div>
+              <h4 className="font-medium text-foreground mb-1">Drawing Tools:</h4>
+              <ul className="space-y-1">
+                <li>• <strong>Pencil:</strong> Free-hand drawing (2-20px brush)</li>
+                <li>• <strong>Pen:</strong> Bezier curves for precise edges</li>
+                <li>• <strong>Line:</strong> Straight lines with snap-to-angle</li>
+                <li>• <strong>Eraser:</strong> Remove outline segments</li>
+                <li>• <strong>Zoom:</strong> Up to 400% magnification</li>
+              </ul>
+            </div>
+            <div>
+              <h4 className="font-medium text-foreground mb-1">Segmentation:</h4>
+              <ul className="space-y-1">
+                <li>• Create segments to outline different image regions</li>
+                <li>• Draw closed polygons around image parts</li>
+                <li>• Auto-close shapes within 10px tolerance</li>
+                <li>• Color-code segments for organization</li>
+                <li>• Undo/Redo up to 20 steps</li>
+              </ul>
+            </div>
+          </div>
         </div>
       </div>
     </div>
