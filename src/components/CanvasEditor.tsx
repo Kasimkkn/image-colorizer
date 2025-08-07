@@ -140,110 +140,19 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
     fabricCanvas.renderAll();
   }, [fabricCanvas, currentPath, color, activeSegmentId, createPathFromPoints, tempObjects]);
 
-  // Initialize canvas with proper event handling
-  const initializeCanvas = useCallback(async () => {
-    if (!canvasRef.current) return;
-
-    // Create canvas with proper configuration
-    const canvas = new FabricCanvas(canvasRef.current, {
-      width: 1000,
-      height: 700,
-      backgroundColor: "#1a1a1a",
-      preserveObjectStacking: true,
-      renderOnAddRemove: true,
-    });
-
-    // Load and setup base image
-    const imageUrl = URL.createObjectURL(imageFile);
-    const img = new Image();
-
-    img.onload = () => {
-      FabricImage.fromURL(imageUrl).then((fabricImg) => {
-        // Calculate proper scaling
-        const maxWidth = canvas.width! - 40;
-        const maxHeight = canvas.height! - 40;
-        const scaleX = maxWidth / img.width;
-        const scaleY = maxHeight / img.height;
-        const scale = Math.min(scaleX, scaleY);
-
-        fabricImg.scale(scale);
-        fabricImg.set({
-          left: (canvas.width! - fabricImg.getScaledWidth()) / 2,
-          top: (canvas.height! - fabricImg.getScaledHeight()) / 2,
-          selectable: false,
-          evented: false,
-          name: 'baseImage'
-        });
-
-        canvas.add(fabricImg);
-        canvas.sendObjectToBack(fabricImg);
-        setBaseImage(fabricImg);
-
-        canvas.renderAll();
-        saveState(canvas);
-        toast.success("Image loaded successfully!");
-      });
-
-      URL.revokeObjectURL(imageUrl);
-    };
-
-    img.src = imageUrl;
-
-    // Configure free drawing brush
-    canvas.freeDrawingBrush.color = color;
-    canvas.freeDrawingBrush.width = brushSize;
-    canvas.isDrawingMode = false; // Start with drawing mode off
-
-    // Canvas event listeners
-    canvas.on('path:created', (e: any) => {
-      if (activeSegmentId && activeTool === "pencil") {
-        // Add segment identifier to the created path
-        e.path.set({
-          segmentId: activeSegmentId,
-          isSegmentPath: true,
-          stroke: color,
-          strokeWidth: brushSize,
-          opacity: 0.8
-        });
-      }
-      saveState(canvas);
-    });
-
-    // Mouse event handling for different tools
-    canvas.on('mouse:down', (e: any) => {
-      handleCanvasMouseDown(e, canvas);
-    });
-
-    canvas.on('mouse:move', (e: any) => {
-      handleCanvasMouseMove(e, canvas);
-    });
-
-    canvas.on('mouse:up', (e: any) => {
-      handleCanvasMouseUp(e, canvas);
-    });
-
-    // Object selection handling
-    canvas.on('selection:created', (e: any) => {
-      handleObjectSelection(e, canvas);
-    });
-
-    setFabricCanvas(canvas);
-
-    return () => {
-      canvas.dispose();
-    };
-  }, [imageFile, color, brushSize, activeSegmentId, activeTool, saveState]);
-
   // Handle mouse down events based on active tool
-  const handleCanvasMouseDown = useCallback((e: any, canvas: FabricCanvas) => {
-    if (!canvas) return;
+  const handleCanvasMouseDown = useCallback((e: any) => {
+    if (!fabricCanvas) return;
 
-    const pointer = canvas.getPointer(e.e);
+    const pointer = fabricCanvas.getPointer(e.e);
     const point = { x: pointer.x, y: pointer.y };
+
+    console.log(`Tool: ${activeTool}, Point: ${point.x}, ${point.y}`); // Debug log
 
     switch (activeTool) {
       case "pencil":
         // Free drawing mode is handled by Fabric.js automatically
+        console.log("Pencil tool - free drawing mode should be active");
         break;
 
       case "line":
@@ -257,6 +166,7 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
           // Start new path
           setCurrentPath([point]);
           setIsDrawingPath(true);
+          console.log("Started new path");
         } else {
           // Add point to current path
           let finalPoint = point;
@@ -294,43 +204,21 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
 
       case "zoom":
         const newZoom = zoom < 3 ? zoom * 1.2 : 1;
-        canvas.setZoom(newZoom);
+        fabricCanvas.setZoom(newZoom);
         setZoom(newZoom);
         break;
 
       case "eraser":
         // Handle erasing of segment paths
-        const target = canvas.findTarget(e.e, false);
-        if (target && target.segmentId) {
-          canvas.remove(target);
-          saveState(canvas);
+        const target = fabricCanvas.findTarget(e.e, false);
+        if (target && (target as any).segmentId) {
+          fabricCanvas.remove(target);
+          saveState(fabricCanvas);
           toast.success("Segment part erased!");
         }
         break;
     }
-  }, [activeTool, activeSegmentId, isDrawingPath, currentPath, snapAngles, zoom]);
-
-  // Handle mouse move events
-  const handleCanvasMouseMove = useCallback((e: any, canvas: FabricCanvas) => {
-    // Handle real-time preview for certain tools
-    if (isDrawingPath && (activeTool === "line" || activeTool === "pen")) {
-      // Update temporary visualization
-    }
-  }, [activeTool, isDrawingPath]);
-
-  // Handle mouse up events
-  const handleCanvasMouseUp = useCallback((e: any, canvas: FabricCanvas) => {
-    // Handle completion of drawing operations if needed
-  }, []);
-
-  // Handle object selection for color filling
-  const handleObjectSelection = useCallback((e: any, canvas: FabricCanvas) => {
-    const selectedObject = e.selected?.[0];
-    if (selectedObject && selectedObject.segmentId) {
-      // This is a segment path - we can apply color to it
-      setActiveSegmentId(selectedObject.segmentId);
-    }
-  }, []);
+  }, [activeTool, activeSegmentId, isDrawingPath, currentPath, snapAngles, zoom, fabricCanvas]);
 
   // Finalize current path and create segment
   const finalizePath = useCallback((pathPoints: Point[], closed: boolean) => {
@@ -407,6 +295,8 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
   const handleToolChange = useCallback((tool: DrawingTool) => {
     if (!fabricCanvas) return;
 
+    console.log(`Changing tool to: ${tool}`); // Debug log
+
     setActiveTool(tool);
 
     // Clear any ongoing path
@@ -426,11 +316,13 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
         fabricCanvas.freeDrawingBrush.color = color;
         fabricCanvas.freeDrawingBrush.width = brushSize;
         fabricCanvas.selection = false;
+        console.log("Pencil tool activated - free drawing mode ON");
         break;
 
       case "eraser":
         fabricCanvas.isDrawingMode = false;
         fabricCanvas.selection = true;
+        console.log("Eraser tool activated");
         break;
 
       case "line":
@@ -438,6 +330,7 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
       case "zoom":
         fabricCanvas.isDrawingMode = false;
         fabricCanvas.selection = false;
+        console.log(`${tool} tool activated`);
         break;
 
       default:
@@ -445,6 +338,99 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
         fabricCanvas.selection = true;
     }
   }, [fabricCanvas, tempObjects, color, brushSize]);
+
+  // Initialize canvas with proper event handling
+  const initializeCanvas = useCallback(async () => {
+    if (!canvasRef.current) return;
+
+    console.log("Initializing canvas..."); // Debug log
+
+    // Create canvas with proper configuration
+    const canvas = new FabricCanvas(canvasRef.current, {
+      width: 1000,
+      height: 700,
+      backgroundColor: "#1a1a1a",
+      preserveObjectStacking: true,
+      renderOnAddRemove: true,
+    });
+
+    // Load and setup base image
+    const imageUrl = URL.createObjectURL(imageFile);
+    const img = new Image();
+
+    img.onload = () => {
+      FabricImage.fromURL(imageUrl).then((fabricImg) => {
+        // Calculate proper scaling
+        const maxWidth = canvas.width! - 40;
+        const maxHeight = canvas.height! - 40;
+        const scaleX = maxWidth / img.width;
+        const scaleY = maxHeight / img.height;
+        const scale = Math.min(scaleX, scaleY);
+
+        fabricImg.scale(scale);
+        fabricImg.set({
+          left: (canvas.width! - fabricImg.getScaledWidth()) / 2,
+          top: (canvas.height! - fabricImg.getScaledHeight()) / 2,
+          selectable: false,
+          evented: false,
+          name: 'baseImage'
+        });
+
+        canvas.add(fabricImg);
+        canvas.sendObjectToBack(fabricImg);
+        setBaseImage(fabricImg);
+
+        canvas.renderAll();
+        saveState(canvas);
+        console.log("Image loaded and canvas initialized"); // Debug log
+        toast.success("Image loaded successfully!");
+      });
+
+      URL.revokeObjectURL(imageUrl);
+    };
+
+    img.src = imageUrl;
+
+    // Configure free drawing brush
+    canvas.freeDrawingBrush.color = color;
+    canvas.freeDrawingBrush.width = brushSize;
+    canvas.isDrawingMode = false; // Start with drawing mode off
+
+    // Canvas event listeners
+    canvas.on('path:created', (e: any) => {
+      console.log("Path created event fired"); // Debug log
+      if (activeSegmentId && activeTool === "pencil") {
+        // Add segment identifier to the created path
+        e.path.set({
+          segmentId: activeSegmentId,
+          isSegmentPath: true,
+          stroke: color,
+          strokeWidth: brushSize,
+          opacity: 0.8
+        });
+      }
+      saveState(canvas);
+    });
+
+    // Mouse event handling for different tools
+    canvas.on('mouse:down', handleCanvasMouseDown);
+
+    // Object selection handling
+    canvas.on('selection:created', (e: any) => {
+      const selectedObject = e.selected?.[0];
+      if (selectedObject && (selectedObject as any).segmentId) {
+        // This is a segment path - we can apply color to it
+        setActiveSegmentId((selectedObject as any).segmentId);
+      }
+    });
+
+    setFabricCanvas(canvas);
+    console.log("Canvas setup complete"); // Debug log
+
+    return () => {
+      canvas.dispose();
+    };
+  }, [imageFile, color, brushSize, activeSegmentId, activeTool, saveState, handleCanvasMouseDown]);
 
   // Segment management functions
   const handleSegmentCreate = () => {
@@ -591,67 +577,162 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
     }
   }, [fabricCanvas, brushSize]);
 
+  // Debug: Log current tool and canvas state
+  useEffect(() => {
+    if (fabricCanvas) {
+      console.log(`Current tool: ${activeTool}, Drawing mode: ${fabricCanvas.isDrawingMode}, Selection: ${fabricCanvas.selection}`);
+    }
+  }, [activeTool, fabricCanvas]);
+
   return (
-    <div className="min-h-screen p-6">
-      <div className="max-w-7xl mx-auto space-y-6">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50 p-4">
+      <div className="max-w-7xl mx-auto space-y-4">
         {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold neon-text">Image Colorization Studio</h1>
-            <p className="text-muted-foreground">Professional segmentation and colorization tools</p>
-          </div>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={handleDownload}>
-              Download PNG
-            </Button>
-            <Button variant="outline" onClick={onBack}>
-              ← Back to Upload
-            </Button>
+        <div className="bg-white/80 backdrop-blur-lg border border-slate-200/60 rounded-2xl p-6 shadow-xl shadow-indigo-500/10">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 bg-gradient-to-br from-indigo-600 to-blue-600 rounded-xl flex items-center justify-center shadow-lg">
+                <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zM21 5a2 2 0 00-2-2h-4a2 2 0 00-2 2v12a4 4 0 004 4h4a4 4 0 004-4V5z" />
+                </svg>
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Colorization Studio</h1>
+                <p className="text-slate-500 font-medium">Professional image editing & segmentation</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <Button
+                variant="default"
+                onClick={handleDownload}
+                className="bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-700 hover:to-green-700 text-white font-semibold px-6 py-2.5 rounded-xl shadow-lg shadow-emerald-500/25 border-0 transition-all duration-200 hover:scale-105"
+              >
+                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                Export PNG
+              </Button>
+              <Button
+                variant="outline"
+                onClick={onBack}
+                className="border-slate-300 text-slate-700 hover:bg-slate-100 font-medium px-6 py-2.5 rounded-xl transition-all duration-200 hover:scale-105"
+              >
+                ← Back to Upload
+              </Button>
+            </div>
           </div>
         </div>
 
         {/* Tools Panel */}
-        <div className="flex gap-6 flex-wrap">
-          <DrawingTools
-            activeTool={activeTool}
-            onToolChange={handleToolChange}
-            brushSize={brushSize}
-            onBrushSizeChange={setBrushSize}
-            zoomLevel={zoom}
-            canUndo={canUndo}
-            canRedo={canRedo}
-            onUndo={handleUndo}
-            onRedo={handleRedo}
-            snapToAngle={snapAngles}
-            onSnapToAngleChange={setSnapAngles}
-          />
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+          {/* Drawing Tools */}
+          <div className="lg:col-span-1">
+            <DrawingTools
+              activeTool={activeTool}
+              onToolChange={handleToolChange}
+              brushSize={brushSize}
+              onBrushSizeChange={setBrushSize}
+              zoomLevel={zoom}
+              canUndo={canUndo}
+              canRedo={canRedo}
+              onUndo={handleUndo}
+              onRedo={handleRedo}
+              snapToAngle={snapAngles}
+              onSnapToAngleChange={setSnapAngles}
+            />
+          </div>
 
-          <SegmentationManager
-            segments={segments}
-            activeSegmentId={activeSegmentId}
-            onSegmentSelect={handleSegmentSelect}
-            onSegmentCreate={handleSegmentCreate}
-            onSegmentDelete={handleSegmentDelete}
-            onSegmentToggleVisibility={handleSegmentToggleVisibility}
-            onSegmentColorChange={(id, color) => applyColorToSegment(id, color)}
-          />
+          {/* Segmentation Manager */}
+          <div className="lg:col-span-2">
+            <SegmentationManager
+              segments={segments}
+              activeSegmentId={activeSegmentId}
+              onSegmentSelect={handleSegmentSelect}
+              onSegmentCreate={handleSegmentCreate}
+              onSegmentDelete={handleSegmentDelete}
+              onSegmentToggleVisibility={handleSegmentToggleVisibility}
+              onSegmentColorChange={(id, color) => applyColorToSegment(id, color)}
+            />
+          </div>
 
-          <ColorPicker
-            color={color}
-            onChange={handleColorChange}
-            opacity={opacity}
-            onOpacityChange={setOpacity}
-          />
+          {/* Color Picker */}
+          <div className="lg:col-span-1">
+            <ColorPicker
+              color={color}
+              onChange={handleColorChange}
+              opacity={opacity}
+              onOpacityChange={setOpacity}
+            />
+          </div>
         </div>
 
-        {/* Canvas */}
-        <div className="flex justify-center">
-          <div className="glass-panel p-6 rounded-xl shadow-card">
-            <canvas
-              ref={canvasRef}
-              className="border border-border rounded-lg shadow-neon-strong"
-              style={{ cursor: activeTool === 'zoom' ? 'zoom-in' : activeTool === 'eraser' ? 'crosshair' : 'crosshair' }}
-            />
+        {/* Canvas Area */}
+        <div className="bg-white/80 backdrop-blur-lg border border-slate-200/60 rounded-2xl p-6 shadow-xl shadow-indigo-500/10">
+          <div className="flex flex-col items-center space-y-4">
+            <div className="flex items-center justify-between w-full">
+              <div className="flex items-center gap-2 text-sm text-slate-600">
+                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                Canvas Ready
+              </div>
+              <div className="flex items-center gap-4 text-sm text-slate-500">
+                <span>Tool: <span className="font-semibold text-indigo-600">{activeTool}</span></span>
+                <span>Zoom: <span className="font-semibold">{Math.round(zoom * 100)}%</span></span>
+              </div>
+            </div>
+
+            <div className="relative">
+              <canvas
+                ref={canvasRef}
+                className="border-2 border-slate-200 rounded-xl shadow-2xl shadow-slate-900/20 bg-slate-900"
+                style={{
+                  cursor: activeTool === 'zoom' ? 'zoom-in' : activeTool === 'eraser' ? 'crosshair' : 'crosshair',
+                  maxWidth: '100%',
+                  height: 'auto'
+                }}
+              />
+
+              {/* Canvas overlay indicators */}
+              <div className="absolute top-4 left-4 flex flex-col gap-2">
+                {activeSegmentId && (
+                  <div className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold shadow-lg">
+                    Active: {segments.find(s => s.id === activeSegmentId)?.name}
+                  </div>
+                )}
+                {isDrawingPath && (
+                  <div className="bg-emerald-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold shadow-lg animate-pulse">
+                    Drawing in progress...
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Status Bar */}
+        <div className="bg-white/60 backdrop-blur-md border border-slate-200/60 rounded-xl p-4 shadow-lg">
+          <div className="flex items-center justify-between text-sm">
+            <div className="flex items-center gap-6 text-slate-600">
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 bg-indigo-500 rounded-full"></div>
+                <span>Canvas: <span className="font-semibold">{fabricCanvas ? "Ready" : "Loading..."}</span></span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
+                <span>Segments: <span className="font-semibold">{segments.length}</span></span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 bg-emerald-500 rounded-full"></div>
+                <span>Brush: <span className="font-semibold">{brushSize}px</span></span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 text-slate-500">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span className="text-xs">Professional Editing Mode</span>
+            </div>
           </div>
         </div>
       </div>
