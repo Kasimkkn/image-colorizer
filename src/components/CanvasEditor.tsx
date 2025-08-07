@@ -1,3 +1,4 @@
+
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Canvas as FabricCanvas, FabricImage, Path } from "fabric";
 import { DrawingTools, DrawingTool } from "./DrawingTools";
@@ -37,6 +38,14 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
 
   const canUndo = historyIndex > 0;
   const canRedo = historyIndex < history.length - 1;
+
+  const saveState = useCallback((canvas: FabricCanvas) => {
+    const state = canvas.toJSON();
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(JSON.stringify(state));
+    setHistory(newHistory);
+    setHistoryIndex(newHistory.length - 1);
+  }, [history, historyIndex]);
 
   const initializeCanvas = useCallback(async () => {
     if (!canvasRef.current) return;
@@ -92,7 +101,7 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
     });
 
     canvas.on('object:added', () => {
-      setCanUndo(true);
+      // Object added, history will be saved by saveState
     });
 
     setFabricCanvas(canvas);
@@ -101,14 +110,6 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
       canvas.dispose();
     };
   }, [imageFile, color, saveState]);
-
-  const saveState = useCallback((canvas: FabricCanvas) => {
-    const state = canvas.toJSON();
-    const newHistory = history.slice(0, historyIndex + 1);
-    newHistory.push(JSON.stringify(state));
-    setHistory(newHistory);
-    setHistoryIndex(newHistory.length - 1);
-  }, [history, historyIndex]);
 
   const handleUndo = () => {
     if (!fabricCanvas || !canUndo) return;
@@ -275,13 +276,13 @@ export const CanvasEditor = ({ imageFile, onBack }: CanvasEditorProps) => {
   useEffect(() => {
     if (!fabricCanvas) return;
 
-    fabricCanvas.isDrawingMode = activeTool === "brush" || activeTool === "eraser";
+    fabricCanvas.isDrawingMode = activeTool === "pencil" || activeTool === "eraser";
     
     if (fabricCanvas.freeDrawingBrush) {
       fabricCanvas.freeDrawingBrush.color = activeTool === "eraser" ? "#1a1a1a" : color;
-      fabricCanvas.freeDrawingBrush.width = activeTool === "eraser" ? 10 : 5;
+      fabricCanvas.freeDrawingBrush.width = activeTool === "eraser" ? 10 : brushSize;
     }
-  }, [activeTool, color, fabricCanvas]);
+  }, [activeTool, color, fabricCanvas, brushSize]);
 
   useEffect(() => {
     if (!fabricCanvas) return;
